@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Review"
+  short_description: "Audite Django, FastAPI, GraphQL e PostgreSQL"
+  default_prompt: "Use $security-review para auditar este projeto e entregar um relatório de segurança priorizado."
