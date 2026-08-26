@@ -29,6 +29,6 @@ Review every `SECURITY DEFINER` function. Its `search_path` must exclude schemas
 
 ## Audit workflow
 
-Run `scripts/postgresql_security_audit.sql` with `psql` only on an authorized database. It starts a read-only transaction and inventories roles, grants, RLS, policies, privileged functions, extensions, and selected settings. Some catalog visibility depends on the caller, so missing rows are not proof of safety. Redact role names, network details, and policy expressions before sharing output externally.
+Run the installed skill's `scripts/postgresql_security_audit.sql` by absolute path with `psql` only on an authorized database. It starts a read-only transaction, records then replaces the inherited `search_path`, schema-qualifies catalog objects, and inventories roles, per-role/database settings, table/column/sequence usage grants, RLS, policies, privileged functions, extensions, and selected settings. Some catalog visibility depends on the caller, so missing rows are not proof of safety. Redact role names, network details, and policy expressions before sharing output externally.
 
 Also inspect provider controls, `pg_hba.conf`, client TLS mode, secret storage, backup policy, connection pooler, and migration pipeline; SQL catalog queries cannot verify all of these.

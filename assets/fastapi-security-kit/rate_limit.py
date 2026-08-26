@@ -9,11 +9,22 @@ from __future__ import annotations
 import hashlib
 import hmac
 import inspect
+import logging
+import re
+import threading
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fastapi import HTTPException, Request, Response, status
+
+
+LOGGER = logging.getLogger(__name__)
+HTTP_TOKEN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_FAILURE_LOG_INTERVAL_SECONDS = 60.0
+_FAILURE_LOG_LOCK = threading.Lock()
+_LAST_FAILURE_LOG: dict[tuple[str, str], float] = {}
 
 
 class CounterStore(Protocol):
@@ -79,24 +90,55 @@ def _key(prefix: str, scope: str, identity: str, key_secret: bytes) -> str:
     return f"{prefix}:{scope}:{digest}"
 
 
+def _normalize_methods(values: Iterable[str]) -> frozenset[str]:
+    if isinstance(values, (str, bytes)):
+        raise TypeError("methods must be an iterable of complete HTTP method strings")
+    method_values = tuple(values)
+    if any(not isinstance(method, str) for method in method_values):
+        raise TypeError("methods must contain strings")
+    normalized = frozenset(method.upper() for method in method_values)
+    if not normalized or any(HTTP_TOKEN.fullmatch(method) is None for method in normalized):
+        raise ValueError("methods must contain valid non-empty HTTP method tokens")
+    return normalized
+
+
+def _log_store_failure(scope: str, fail_closed: bool, exc: Exception) -> None:
+    mode = "closed" if fail_closed else "open"
+    signature = (scope, mode)
+    now = time.monotonic()
+    with _FAILURE_LOG_LOCK:
+        last = _LAST_FAILURE_LOG.get(signature, float("-inf"))
+        if now - last < _FAILURE_LOG_INTERVAL_SECONDS:
+            return
+        _LAST_FAILURE_LOG[signature] = now
+    LOGGER.warning(
+        "rate-limit store failure; scope=%s mode=%s error=%s",
+        scope,
+        mode,
+        type(exc).__name__,
+    )
+
+
 @dataclass(frozen=True)
 class RateLimitPolicy:
     scope: str
     limit: int
     window_seconds: int
-    methods: frozenset[str] = frozenset({"POST"})
+    methods: Iterable[str] = frozenset({"POST"})
 
     def __post_init__(self) -> None:
-        if not self.scope or any(char.isspace() for char in self.scope):
+        if not isinstance(self.scope, str) or not self.scope or any(char.isspace() for char in self.scope):
             raise ValueError("scope must be a non-empty token without whitespace")
-        if self.limit < 1 or self.window_seconds < 1:
+        if (
+            isinstance(self.limit, bool)
+            or not isinstance(self.limit, int)
+            or isinstance(self.window_seconds, bool)
+            or not isinstance(self.window_seconds, int)
+            or self.limit < 1
+            or self.window_seconds < 1
+        ):
             raise ValueError("limit and window_seconds must be positive")
-        if any(not isinstance(method, str) for method in self.methods):
-            raise TypeError("methods must contain strings")
-        normalized = frozenset(method.upper() for method in self.methods)
-        if not normalized or any(not method or any(char.isspace() for char in method) for method in normalized):
-            raise ValueError("methods must contain non-empty HTTP method tokens")
-        object.__setattr__(self, "methods", normalized)
+        object.__setattr__(self, "methods", _normalize_methods(self.methods))
 
 
 class RateLimit:
@@ -110,12 +152,14 @@ class RateLimit:
         identity: Identity = direct_client_identity,
         key_prefix: str = "security:rate-limit:v1",
         key_secret: bytes,
-        fail_closed: bool = False,
+        fail_closed: bool,
     ) -> None:
         if not isinstance(key_secret, bytes) or len(key_secret) < 32:
             raise ValueError("key_secret must contain at least 32 bytes")
-        if not key_prefix or any(char.isspace() for char in key_prefix):
+        if not isinstance(key_prefix, str) or not key_prefix or any(char.isspace() for char in key_prefix):
             raise ValueError("key_prefix must be a non-empty token without whitespace")
+        if not isinstance(fail_closed, bool):
+            raise TypeError("fail_closed must be an explicit boolean")
         self.store = store
         self.policy = policy
         self.identity = identity
@@ -136,6 +180,7 @@ class RateLimit:
             ):
                 raise RuntimeError("rate-limit store returned an invalid count or TTL")
         except Exception as exc:
+            _log_store_failure(self.policy.scope, self.fail_closed, exc)
             if self.fail_closed:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -163,4 +208,4 @@ class RateLimit:
 
 def methods(*values: str) -> frozenset[str]:
     """Convenience helper for an immutable normalized method set."""
-    return frozenset(value.upper() for value in values)
+    return _normalize_methods(values)

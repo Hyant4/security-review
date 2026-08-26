@@ -2,7 +2,7 @@
 
 ## Endpoint inventory
 
-Inventory every `FastAPI`/`APIRouter` path operation, mounted ASGI app, WebSocket, callback, webhook, docs/OpenAPI route, static/media mount, and background task. Run `scripts/python_api_endpoint_inventory.py` as a static starting point, then confirm `app.routes` or the generated OpenAPI document at runtime in an authorized environment.
+Inventory every `FastAPI`/`APIRouter` path operation, mounted ASGI app, WebSocket, callback, webhook, docs/OpenAPI route, static/media mount, and background task. Run the installed skill's `scripts/python_api_endpoint_inventory.py` by absolute path as a static starting point. Importing the application to inspect `app.routes` or generate OpenAPI executes target-controlled code; do it only after separate authorization and inside the disposable sandbox defined by `SKILL.md`.
 
 For each operation record method/path, request and response model, actor, OAuth/API-key scopes, dependency chain, object/tenant authorization, database transaction, external side effect, payload limit, timeout, and rate-limit scope. A `Depends()` declaration is only a signal: inspect the dependency and all sub-dependencies.
 

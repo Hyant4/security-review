@@ -2,7 +2,7 @@
 
 ## Configuration and deployment
 
-Inspect settings for each real environment, not only the development default. Run `python manage.py check --deploy` with production-like settings where safe. It is a low-hanging-fruit check, not a code audit.
+Inspect settings for each real environment, not only the development default. `python manage.py check --deploy` imports repository-controlled code. Run it with production-like settings only after separate code-execution authorization and inside the disposable sandbox defined by `SKILL.md`. It is a low-hanging-fruit check, not a code audit. If containment is unavailable, mark it **not assessed**.
 
 Review:
 
@@ -28,6 +28,8 @@ For Django REST Framework, inspect `DEFAULT_PERMISSION_CLASSES`, every view over
 - Review password hashers and auth backends before changing them. Avoid custom password handling; use Django mechanisms.
 
 ## Useful commands, with limits
+
+The commands below execute target-controlled code or packages. They are examples for an explicitly authorized, disposable sandbox—not commands to run on the reviewer host. Use a read-only source mount, temporary writes, no host secrets, no production services, network disabled by default, and resource/time limits.
 
 ```text
 python manage.py check --deploy

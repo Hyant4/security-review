@@ -8,7 +8,17 @@ import ast
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+
+from _inventory_common import (
+    ScanLimits,
+    ScanState,
+    bounded_text,
+    enforce_output_budget,
+    iter_python_files,
+    markdown_text,
+    parse_bounded,
+    read_python_source,
+)
 
 
 SKIP_DIRS = {
@@ -223,40 +233,47 @@ class Visitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def files(root: Path) -> Iterable[Path]:
-    for path in root.rglob("*.py"):
-        if not any(part in SKIP_DIRS for part in path.parts):
-            yield path
-
-
-def inventory(root: Path) -> dict[str, object]:
+def inventory(
+    root: Path,
+    *,
+    limits: ScanLimits | None = None,
+    root_label: str | None = None,
+    revision: str | None = None,
+) -> dict[str, object]:
+    limits = limits or ScanLimits()
+    state = ScanState(limits)
+    root = root.resolve(strict=True)
     signals: list[Signal] = []
-    errors: list[dict[str, object]] = []
-    scanned = 0
-    for path in files(root):
-        scanned += 1
-        rel = path.relative_to(root).as_posix()
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=rel)
-        except (OSError, UnicodeError, SyntaxError) as exc:
-            errors.append({"file": rel, "error": f"{type(exc).__name__}: {exc}"})
+    for path, rel in iter_python_files(root, SKIP_DIRS, state):
+        source = read_python_source(path, rel, root, state)
+        if source is None:
+            continue
+        tree = parse_bounded(source, rel, state)
+        if tree is None:
             continue
         visitor = Visitor(rel)
-        visitor.visit(tree)
-        signals.extend(visitor.signals)
+        try:
+            visitor.visit(tree)
+        except (MemoryError, RecursionError) as exc:
+            state.add_error(rel, f"AST visit failed: {type(exc).__name__}")
+            continue
+        state.add_records(signals, visitor.signals)
+        if state.stop_requested:
+            break
     unique = {
         (s.framework, s.kind, s.symbol, s.route_or_field, s.file, s.line): s
         for s in signals
     }
     ordered = sorted(unique.values(), key=lambda s: (s.file, s.line, s.framework, s.kind))
+    state.records_returned = len(ordered)
     return {
-        "notice": "Static inventory only; generated routes, inherited dependencies, and runtime schema require confirmation.",
-        "root": str(root.resolve()),
-        "python_files_scanned": scanned,
+        "notice": "Static inventory only; generated routes, inherited dependencies, and runtime schema require separately authorized sandbox confirmation.",
+        "scan": state.metadata(root_label=root_label or root.name, revision=revision),
+        "python_files_scanned": state.files_scanned,
         "signals": [asdict(item) for item in ordered],
-        "parse_errors": errors,
+        "parse_errors": state.errors,
         "review_hints": [
-            "Resolve mounted routers/apps and inspect runtime OpenAPI/app.routes.",
+            "Resolve mounted routers/apps statically; inspect runtime OpenAPI/app.routes only in an authorized sandbox.",
             "Trace GraphQL fields to resolvers, authorization, database calls, pagination, and cost.",
             "Confirm controls listed as signals by reading their implementation and sub-dependencies.",
             "Check rate-limit identity against the trusted proxy model and a shared atomic store.",
@@ -267,16 +284,21 @@ def inventory(root: Path) -> dict[str, object]:
 def markdown(data: dict[str, object]) -> str:
     lines = [
         "# Python API security inventory", "", f"> {data['notice']}", "",
-        f"Python files scanned: {data['python_files_scanned']}", "",
+        f"Python files scanned: {data['python_files_scanned']} (complete: {data['scan']['complete']})", "",
         "| Framework | Kind | Route/field | Symbol | Methods | Controls | Sensitive hint | Evidence |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for item in data["signals"]:
-        values = [str(item[key]).replace("|", "\\|") for key in ("route_or_field", "symbol")]
+        values = [markdown_text(item[key]) for key in ("route_or_field", "symbol")]
+        framework = markdown_text(item["framework"])
+        kind = markdown_text(item["kind"])
+        methods_value = markdown_text(", ".join(item["methods"]))
+        controls = markdown_text(", ".join(item["controls"]))
+        evidence = markdown_text(f"{item['file']}:{item['line']}")
         lines.append(
-            f"| {item['framework']} | {item['kind']} | `{values[0]}` | `{values[1]}` | "
-            f"{', '.join(item['methods'])} | {', '.join(item['controls'])} | "
-            f"{'yes' if item['sensitive_hint'] else 'no'} | `{item['file']}:{item['line']}` |"
+            f"| {framework} | {kind} | `{values[0]}` | `{values[1]}` | "
+            f"{methods_value} | {controls} | "
+            f"{'yes' if item['sensitive_hint'] else 'no'} | `{evidence}` |"
         )
     if not data["signals"]:
         lines.append("| _No static FastAPI/GraphQL signals found_ | | | | | | | |")
@@ -284,7 +306,10 @@ def markdown(data: dict[str, object]) -> str:
     lines.extend(f"- {item}" for item in data["review_hints"])
     if data["parse_errors"]:
         lines += ["", "## Parse errors", ""]
-        lines.extend(f"- `{item['file']}` — {item['error']}" for item in data["parse_errors"])
+        lines.extend(
+            f"- `{markdown_text(item['file'])}` — {markdown_text(item['error'])}"
+            for item in data["parse_errors"]
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -293,11 +318,49 @@ def main() -> int:
     parser.add_argument("root", type=Path)
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--root-label", help="Logical repository label; never an absolute path")
+    parser.add_argument("--revision", help="Caller-supplied commit/tag or snapshot label")
+    parser.add_argument("--max-files", type=int, default=ScanLimits.max_files)
+    parser.add_argument("--max-file-bytes", type=int, default=ScanLimits.max_file_bytes)
+    parser.add_argument("--max-total-bytes", type=int, default=ScanLimits.max_total_bytes)
+    parser.add_argument("--max-ast-nodes", type=int, default=ScanLimits.max_ast_nodes)
+    parser.add_argument("--max-records", type=int, default=ScanLimits.max_records)
+    parser.add_argument("--max-errors", type=int, default=ScanLimits.max_errors)
+    parser.add_argument("--max-seconds", type=float, default=ScanLimits.max_seconds)
+    parser.add_argument("--max-output-bytes", type=int, default=ScanLimits.max_output_bytes)
     args = parser.parse_args()
     if not args.root.is_dir():
         parser.error(f"not a directory: {args.root}")
-    data = inventory(args.root)
-    rendered = json.dumps(data, indent=2, ensure_ascii=False) + "\n" if args.format == "json" else markdown(data)
+    limits = ScanLimits(
+        max_files=args.max_files,
+        max_file_bytes=args.max_file_bytes,
+        max_total_bytes=args.max_total_bytes,
+        max_ast_nodes=args.max_ast_nodes,
+        max_records=args.max_records,
+        max_errors=args.max_errors,
+        max_seconds=args.max_seconds,
+        max_output_bytes=args.max_output_bytes,
+    )
+    data = inventory(
+        args.root,
+        limits=limits,
+        root_label=bounded_text(args.root_label or args.root.name, limits.max_value_chars),
+        revision=args.revision,
+    )
+    render = (
+        (lambda value: json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+        if args.format == "json"
+        else markdown
+    )
+    rendered = enforce_output_budget(
+        data,
+        ("signals",),
+        render,
+        limits.max_output_bytes,
+        max_seconds=max(
+            limits.max_seconds - float(data["scan"]["stats"]["elapsed_seconds"]), 0.0
+        ),
+    )
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")
     else:
