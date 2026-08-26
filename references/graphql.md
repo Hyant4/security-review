@@ -4,7 +4,7 @@
 
 The HTTP path `/graphql` is only a transport. Inventory every query field, mutation, subscription, resolver, custom scalar, directive, data loader, upload, and federation/entity resolver. Map each field to actor, object/tenant rule, data classification, database/external calls, pagination, and estimated cost.
 
-Run `scripts/python_api_endpoint_inventory.py` for Python schema signals, then inspect the built schema because decorators, inheritance, federation, and generated fields can evade static discovery.
+Run the installed skill's `scripts/python_api_endpoint_inventory.py` by absolute path for static Python schema signals. Building or importing the schema executes target-controlled code; do it only after separate authorization and inside the disposable sandbox defined by `SKILL.md`. Otherwise record dynamically generated fields as **not assessed**.
 
 ## Authentication and authorization
 
@@ -16,13 +16,13 @@ Use variables and typed inputs; do not construct SQL from field names, arguments
 
 Enforce multiple independent budgets before execution:
 
-- Maximum request bytes and parser tokens/time.
+- Maximum request bytes, parser tokens, expanded selections, and wall-clock time enforced outside the parser process.
 - One operation per request unless batching is explicitly required and separately capped.
 - Maximum selection depth, list depth, aliases, fields, fragments, variables, and self-reference.
 - Schema-aware cost weights that multiply list cardinality and pagination arguments.
 - Maximum page size, database statement time, resolver/external-call concurrency, and total execution time.
 
-Adapt `assets/graphql-security-kit/query_limits.py` only as the structural first layer. It limits bytes, operations, fragments, variables, depth, fields, aliases, cycles, and introspection use; it cannot infer database or resolver cost. After structural parsing, run the framework's schema validation and variable coercion before execution. Add schema-aware weights and validate variables such as `first`, `last`, and nested page sizes.
+Adapt `assets/graphql-security-kit/query_limits.py` only as the structural first layer. It limits bytes, parser tokens, operations, fragments, variables, depth, fields, aliases, expanded selections, cycles, undefined/duplicate fragments, and introspection use; it cannot infer database or resolver cost or preempt CPU by itself. Run it in the request's outer time/resource budget. After structural parsing, run the framework's schema validation and variable coercion before execution. Add schema-aware weights and validate variables such as `first`, `last`, and nested page sizes.
 
 ## Rate limiting
 
