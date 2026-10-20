@@ -109,6 +109,20 @@ class FastAPIRateLimitTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_store_rejects_invalid_window_type(self) -> None:
+        class RedisClient:
+            async def eval(self, *args):
+                raise AssertionError("Redis must not be called")
+
+        store = self.mod.RedisFixedWindowStore(RedisClient())
+
+        async def exercise() -> None:
+            for value in (True, 1.5):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    await store.hit("counter", value)
+
+        asyncio.run(exercise())
+
 
 class DjangoRateLimitTests(unittest.TestCase):
     @classmethod
@@ -196,6 +210,30 @@ class DjangoRateLimitTests(unittest.TestCase):
             with self.assertNoLogs(self.mod.LOGGER, level="WARNING"):
                 self.assertEqual(fail_open(request).status_code, 200)
         self.assertIn("mode=open", " ".join(logs.output))
+
+    def test_invalid_cache_counter_obeys_failure_policy(self) -> None:
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        def view(request):
+            return HttpResponse("ok")
+
+        limited = self.mod.rate_limit(
+            scope="login-counter-contract",
+            limit=1,
+            window_seconds=30,
+            key_secret=SECRET,
+            fail_closed=True,
+            require_shared_cache=False,
+        )(view)
+        request = RequestFactory().post("/login", REMOTE_ADDR="203.0.113.12")
+        with (
+            patch.object(cache, "add", return_value=False),
+            patch.object(cache, "incr", return_value=True),
+            self.assertLogs(self.mod.LOGGER, level="WARNING"),
+        ):
+            self.assertEqual(limited(request).status_code, 503)
 
 
 if __name__ == "__main__":

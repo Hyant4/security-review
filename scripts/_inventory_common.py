@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import html
+import math
 import os
 import stat
 import time
@@ -53,8 +54,8 @@ class ScanLimits:
                 raise ValueError(f"{name} must be positive")
         if isinstance(self.max_seconds, bool) or not isinstance(self.max_seconds, (int, float)):
             raise TypeError("max_seconds must be numeric")
-        if self.max_seconds <= 0:
-            raise ValueError("max_seconds must be positive")
+        if not math.isfinite(float(self.max_seconds)) or self.max_seconds <= 0:
+            raise ValueError("max_seconds must be positive and finite")
 
 
 class ScanState:
@@ -305,7 +306,12 @@ def markdown_text(value: object, maximum: int = 500) -> str:
             output.append("\\r")
         elif char == "\t":
             output.append("\\t")
-        elif code < 0x20 or code == 0x7F or code in _BIDI_CONTROLS:
+        elif (
+            code < 0x20
+            or code == 0x7F
+            or 0xD800 <= code <= 0xDFFF
+            or code in _BIDI_CONTROLS
+        ):
             output.append(f"\\u{code:04x}")
         else:
             output.append(char)

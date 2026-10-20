@@ -370,7 +370,7 @@ def main() -> int:
         revision=args.revision,
     )
     render = (
-        (lambda value: json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+        (lambda value: json.dumps(value, indent=2, ensure_ascii=True) + "\n")
         if args.format == "json"
         else markdown
     )

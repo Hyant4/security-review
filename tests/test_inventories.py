@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -57,6 +58,49 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(first["scan"]["snapshot_sha256"], second["scan"]["snapshot_sha256"])
             self.assertEqual(len(first["scan"]["snapshot_sha256"]), 64)
             self.assertNotIn(str(root), json.dumps(first))
+
+    def test_python_inventory_detects_annotated_app_and_trace_route(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "api.py").write_text(
+                "from fastapi import FastAPI\n"
+                "app: FastAPI = FastAPI(docs_url=None)\n"
+                "@app.trace('/diagnostics')\n"
+                "def diagnostics(): pass\n",
+                encoding="utf-8",
+            )
+            data = json.loads(
+                self.run_script("python_api_endpoint_inventory.py", root).stdout
+            )
+            self.assertTrue(
+                any(
+                    item["kind"] == "FastAPI"
+                    and item["symbol"] == "app"
+                    and "docs_url=None" in item["controls"]
+                    for item in data["signals"]
+                )
+            )
+            self.assertTrue(
+                any(
+                    item["route_or_field"] == "/diagnostics"
+                    and item["methods"] == ["TRACE"]
+                    for item in data["signals"]
+                )
+            )
+
+    @unittest.skipIf(os.name == "nt", "POSIX byte filenames required")
+    def test_json_output_escapes_non_utf8_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            invalid_path = os.fsencode(root) + b"/invalid-\xff.py"
+            descriptor = os.open(invalid_path, os.O_WRONLY | os.O_CREAT, 0o600)
+            try:
+                os.write(descriptor, b'(\n')
+            finally:
+                os.close(descriptor)
+            result = self.run_script("python_api_endpoint_inventory.py", root)
+            json.loads(result.stdout)
+            self.assertIn(r"\udcff", result.stdout)
 
     def test_markdown_neutralizes_repository_controlled_structure(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -184,6 +228,14 @@ class InventoryTests(unittest.TestCase):
         self.assertLessEqual(len(output.encode("utf-8")), 2_500)
         self.assertLessEqual(calls, 20)
         self.assertIn("output_byte_limit", data["scan"]["incomplete_reasons"])
+
+    def test_scan_limits_reject_non_finite_deadlines(self) -> None:
+        common = load_module(
+            "tested_inventory_common_limits", ROOT / "scripts" / "_inventory_common.py"
+        )
+        for value in (math.nan, math.inf, -math.inf):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                common.ScanLimits(max_seconds=value)
 
 
 if __name__ == "__main__":

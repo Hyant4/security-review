@@ -139,6 +139,8 @@ def rate_limit(
             try:
                 created = selected_cache.add(cache_key, 1, timeout=retry_after + 1)
                 count = 1 if created else selected_cache.incr(cache_key)
+                if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                    raise RuntimeError("rate-limit cache returned an invalid count")
             except Exception as exc:
                 _log_store_failure(scope, cache_alias, fail_closed, exc)
                 if fail_closed:

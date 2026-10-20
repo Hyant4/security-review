@@ -10,12 +10,25 @@ PostgreSQL roles/RLS.
 
 ## Install
 
-Copy this directory to your Codex skills directory as `security-review`, then
-invoke it with:
+Requirements for the skill itself: a supported Codex installation and Python
+3.12 or 3.14 for the bundled static scanners. Review the checked-out revision
+before copying it into your trusted skills directory.
+
+Copy this directory to `$CODEX_HOME/skills/security-review`, then invoke it
+with:
 
 ```text
 $security-review
 ```
+
+Only Codex installation is documented and tested here. Compatibility with
+other agents is not claimed. Framework packages in `requirements-test.txt` are
+development and test dependencies; target applications keep their own runtime
+dependencies.
+
+`pglast` is GPL-3.0-or-later and is used only to parse the PostgreSQL audit SQL
+in tests. Do not bundle the test environment into a commercial runtime package
+without reviewing all third-party license obligations and required notices.
 
 ## Contents
 
@@ -40,6 +53,7 @@ disposable sandbox as described in `SKILL.md`.
 
 ```text
 python -m pip install -r requirements-test.txt
+python -m compileall -q assets scripts tests
 python -m unittest discover -s tests -v
 ```
 
@@ -48,3 +62,21 @@ already use UTF-8. The scanners default to JSON, cap files/bytes/AST/output,
 refuse symlinks and reparse points, and include a deterministic snapshot digest.
 
 See `references/sources.md` for official upstream sources.
+
+## Known limits
+
+- Endpoint inventories are static review aids. Dynamic routing, inherited
+  policy, generated GraphQL schemas, and deployment behavior need separate
+  validation in an authorized disposable sandbox.
+- Rate-limit and GraphQL modules are adaptable templates, not drop-in
+  production controls.
+- PostgreSQL inventory is read-only but may expose sensitive role, policy, and
+  configuration metadata. Store and share its output as sensitive review data.
+
+## License status
+
+This repository does not currently grant an open-source or commercial license.
+Public visibility alone does not authorize copying, redistribution, resale,
+modification, or commercial use beyond rights supplied by applicable law or
+platform terms. Obtain permission from the applicable copyright holder or
+holders before distribution. No marketplace compatibility is claimed.

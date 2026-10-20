@@ -50,8 +50,12 @@ class RedisFixedWindowStore:
         self.redis = redis_client
 
     async def hit(self, key: str, window_seconds: int) -> tuple[int, int]:
-        if window_seconds < 1:
-            raise ValueError("window_seconds must be positive")
+        if (
+            isinstance(window_seconds, bool)
+            or not isinstance(window_seconds, int)
+            or window_seconds < 1
+        ):
+            raise ValueError("window_seconds must be a positive integer")
         result = await self.redis.eval(
             REDIS_FIXED_WINDOW_LUA,
             1,
