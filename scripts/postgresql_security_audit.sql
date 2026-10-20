@@ -28,8 +28,13 @@ ORDER BY name;
 
 SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb,
        rolcanlogin, rolreplication, rolbypassrls, rolconnlimit,
-       rolvaliduntil, rolconfig
-FROM pg_catalog.pg_roles
+       rolvaliduntil,
+       ARRAY(
+         SELECT pg_catalog.split_part(configured.setting, '=', 1)
+         FROM pg_catalog.unnest(COALESCE(roles.rolconfig, ARRAY[]::text[])) AS configured(setting)
+         ORDER BY 1
+       ) AS role_setting_names
+FROM pg_catalog.pg_roles AS roles
 ORDER BY rolname;
 
 SELECT member_role.rolname AS member_role,
@@ -71,11 +76,23 @@ ORDER BY routine_schema, routine_name, grantee;
 
 SELECT COALESCE(role_settings.rolname, '<all roles>') AS role_name,
        COALESCE(database_settings.datname, '<all databases>') AS database_name,
-       settings.setconfig
+       pg_catalog.split_part(configured.setting, '=', 1) AS setting_name,
+       CASE
+         WHEN pg_catalog.split_part(configured.setting, '=', 1) IN (
+           'search_path', 'row_security', 'statement_timeout', 'lock_timeout',
+           'idle_in_transaction_session_timeout'
+         )
+         THEN pg_catalog.substr(
+           configured.setting,
+           pg_catalog.strpos(configured.setting, '=') + 1
+         )
+         ELSE '<redacted>'
+       END AS setting_value
 FROM pg_catalog.pg_db_role_setting AS settings
 LEFT JOIN pg_catalog.pg_roles AS role_settings ON role_settings.oid = settings.setrole
 LEFT JOIN pg_catalog.pg_database AS database_settings ON database_settings.oid = settings.setdatabase
-ORDER BY role_name, database_name;
+CROSS JOIN LATERAL pg_catalog.unnest(settings.setconfig) AS configured(setting)
+ORDER BY role_name, database_name, setting_name;
 
 SELECT pg_catalog.pg_get_userbyid(d.defaclrole) AS owner,
        COALESCE(n.nspname, '<all schemas>') AS schema_name,

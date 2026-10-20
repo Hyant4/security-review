@@ -65,6 +65,10 @@ class SkillContractTests(unittest.TestCase):
             )
         self.assertIn("information_schema.column_privileges", source)
         self.assertIn("information_schema.usage_privileges", source)
+        self.assertIn("AS role_setting_names", source)
+        self.assertIn("ELSE '<redacted>'", source)
+        self.assertNotRegex(source, r"rolvaliduntil,\s*rolconfig")
+        self.assertNotRegex(source, r"settings\.setconfig\s*\nFROM")
 
 
 if __name__ == "__main__":

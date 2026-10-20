@@ -25,7 +25,10 @@ SKIP_DIRS = {
     ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".venv",
     "__pycache__", "node_modules", "site-packages", "venv",
 }
-HTTP_DECORATORS = {"get", "post", "put", "patch", "delete", "head", "options", "api_route", "websocket"}
+HTTP_DECORATORS = {
+    "get", "post", "put", "patch", "delete", "head", "options", "trace",
+    "api_route", "websocket",
+}
 GRAPHQL_DECORATORS = {"field", "mutation", "subscription"}
 SENSITIVE_WORDS = {
     "admin", "auth", "callback", "export", "graphql", "invite", "login",
@@ -192,27 +195,39 @@ class Visitor(ast.NodeVisitor):
     visit_FunctionDef = _visit_function
     visit_AsyncFunctionDef = _visit_function
 
-    def visit_Assign(self, node: ast.Assign) -> None:
-        if isinstance(node.value, ast.Call):
-            leaf = dotted(node.value.func).split(".")[-1]
+    def _record_application_assignment(
+        self,
+        targets: list[ast.AST],
+        value: ast.AST | None,
+        line: int,
+    ) -> None:
+        if isinstance(value, ast.Call):
+            leaf = dotted(value.func).split(".")[-1]
             if leaf in {"FastAPI", "APIRouter", "GraphQLRouter"}:
-                symbol = dotted(node.targets[0]) if node.targets else "<dynamic>"
-                prefix = next((text(kw.value) for kw in node.value.keywords if kw.arg == "prefix"), None)
-                controls = keyword_controls(node.value)
-                for keyword in node.value.keywords:
+                prefix = next((text(kw.value) for kw in value.keywords if kw.arg == "prefix"), None)
+                controls = keyword_controls(value)
+                for keyword in value.keywords:
                     if keyword.arg in {"docs_url", "redoc_url", "openapi_url"}:
                         controls.add(f"{keyword.arg}={dotted(keyword.value)[:180]}")
-                self.signals.append(Signal(
-                    framework="graphql" if leaf == "GraphQLRouter" else "fastapi",
-                    kind=leaf,
-                    symbol=symbol,
-                    route_or_field=prefix or "<root>",
-                    methods=[],
-                    controls=sorted(controls),
-                    sensitive_hint=bool(prefix and any(word in prefix.lower() for word in SENSITIVE_WORDS)),
-                    file=self.rel_file,
-                    line=node.lineno,
-                ))
+                for target in targets or [ast.Name(id="<dynamic>")]:
+                    self.signals.append(Signal(
+                        framework="graphql" if leaf == "GraphQLRouter" else "fastapi",
+                        kind=leaf,
+                        symbol=dotted(target),
+                        route_or_field=prefix or "<root>",
+                        methods=[],
+                        controls=sorted(controls),
+                        sensitive_hint=bool(prefix and any(word in prefix.lower() for word in SENSITIVE_WORDS)),
+                        file=self.rel_file,
+                        line=line,
+                    ))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self._record_application_assignment(node.targets, node.value, node.lineno)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._record_application_assignment([node.target], node.value, node.lineno)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -348,7 +363,7 @@ def main() -> int:
         revision=args.revision,
     )
     render = (
-        (lambda value: json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+        (lambda value: json.dumps(value, indent=2, ensure_ascii=True) + "\n")
         if args.format == "json"
         else markdown
     )
